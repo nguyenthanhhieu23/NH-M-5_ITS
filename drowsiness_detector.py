@@ -1,162 +1,94 @@
-#!/usr/bin/env python3
 import cv2
 import dlib
-import time
-import argparse
-import numpy as np
-import threading
-import simpleaudio as sa
-from imutils import face_utils
-from collections import deque
+import pyttsx3
+from scipy.spatial import distance
 
-def euclidean(a, b):
-    return np.linalg.norm(a - b)
+# --- Khởi tạo pyttsx3 để cảnh báo âm thanh ---
+engine = pyttsx3.init()
+engine.setProperty('rate', 150)
 
-def eye_aspect_ratio(eye):
-    A = euclidean(eye[1], eye[5])
-    B = euclidean(eye[2], eye[4])
-    C = euclidean(eye[0], eye[3])
+# --- Mở camera ---
+cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+# --- Khởi tạo face detector và shape predictor ---
+face_detector = dlib.get_frontal_face_detector()
+predictor_path = r"D:\Zalo Data\driver_drowsiness_ITS\NH-M-5_ITS\NH-M-5_ITS\shape_predictor_68_face_landmarks.dat"
+face_predictor = dlib.shape_predictor(predictor_path)
+
+# --- Hàm tính Eye Aspect Ratio (EAR) ---
+def detect_eye(eye):
+    A = distance.euclidean(eye[1], eye[5])
+    B = distance.euclidean(eye[2], eye[4])
+    C = distance.euclidean(eye[0], eye[3])
     ear = (A + B) / (2.0 * C) if C != 0 else 0.0
     return ear
 
-class AlarmPlayer:
-    def __init__(self, freq=1000, duration_ms=500):
-        self.freq = freq
-        self.duration_ms = duration_ms
-        self._stop_event = threading.Event()
-        self._thread = None
+# --- Ngưỡng EAR ---
+EAR_THRESHOLD = 0.25
 
-    def _make_tone(self):
-        fs = 44100
-        t = np.linspace(0, self.duration_ms / 1000.0, int(fs * (self.duration_ms / 1000.0)), False)
-        tone = 0.5 * np.sin(2 * np.pi * self.freq * t)
-        audio = (tone * (2**15 - 1)).astype(np.int16)
-        return audio
+# --- Main loop ---
+while True:
+    ret, frame = cap.read()
+    if not ret or frame is None:
+        print("Không thể lấy frame từ camera")
+        continue
 
-    def _play_loop(self):
-        wave = self._make_tone()
-        while not self._stop_event.is_set():
-            try:
-                sa.play_buffer(wave, 1, 2, 44100).wait_done()
-            except Exception:
-                time.sleep(self.duration_ms / 1000.0)
+    # Ép kiểu ảnh và chuyển sang grayscale
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    gray = gray.astype('uint8')
 
-    def start(self):
-        if self._thread is None or not self._thread.is_alive():
-            self._stop_event.clear()
-            self._thread = threading.Thread(target=self._play_loop, daemon=True)
-            self._thread.start()
+    # Phát hiện khuôn mặt
+    faces = face_detector(gray)
 
-    def stop(self):
-        self._stop_event.set()
-        if self._thread is not None:
-            self._thread.join(timeout=0.5)
-            self._thread = None
+    for face in faces:
+        landmarks = face_predictor(gray, face)
+        leftEye = []
+        rightEye = []
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--shape-predictor", required=True, help="path to dlib's 68-point shape predictor")
-    ap.add_argument("--camera", type=int, default=0, help="camera device index")
-    ap.add_argument("--ear-thresh", type=float, default=0.25, help="EAR threshold to consider eye closed")
-    ap.add_argument("--ear-consec-frames", type=int, default=20, help="consecutive frames threshold for alarm")
-    ap.add_argument("--output", default=None, help="optional: output video file (ex: out.avi)")
-    args = ap.parse_args()
+        # Right eye: points 42-47
+        for n in range(42, 48):
+            x = landmarks.part(n).x
+            y = landmarks.part(n).y
+            rightEye.append((x, y))
+            next_point = n+1 if n != 47 else 42
+            x2 = landmarks.part(next_point).x
+            y2 = landmarks.part(next_point).y
+            cv2.line(frame, (x, y), (x2, y2), (0, 255, 0), 1)
 
-    detector = dlib.get_frontal_face_detector()
-    predictor = dlib.shape_predictor(args.shape_predictor)
+        # Left eye: points 36-41
+        for n in range(36, 42):
+            x = landmarks.part(n).x
+            y = landmarks.part(n).y
+            leftEye.append((x, y))
+            next_point = n+1 if n != 41 else 36
+            x2 = landmarks.part(next_point).x
+            y2 = landmarks.part(next_point).y
+            cv2.line(frame, (x, y), (x2, y2), (255, 255, 0), 1)
 
-    (lStart, lEnd) = face_utils.FACIAL_LANDMARKS_IDXS["left_eye"]
-    (rStart, rEnd) = face_utils.FACIAL_LANDMARKS_IDXS["right_eye"]
+        # Tính EAR trung bình
+        ear_left = detect_eye(leftEye)
+        ear_right = detect_eye(rightEye)
+        ear_avg = round((ear_left + ear_right) / 2.0, 2)
 
-    vs = cv2.VideoCapture(args.camera)
-    time.sleep(0.5)
-    width = int(vs.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(vs.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = vs.get(cv2.CAP_PROP_FPS) or 20.0
+        # Nếu mắt nhắm
+        if ear_avg < EAR_THRESHOLD:
+            cv2.putText(frame, "DROWSINESS DETECTED", (50, 100),
+                        cv2.FONT_HERSHEY_PLAIN, 2, (0,0,255), 3)
+            cv2.putText(frame, "Alert!!!! WAKE UP DUDE", (50, 450),
+                        cv2.FONT_HERSHEY_PLAIN, 2, (0,0,255), 3)
+            engine.say("Alert!!!! WAKE UP DUDE")
+            engine.runAndWait()
 
-    writer = None
-    if args.output:
-        fourcc = cv2.VideoWriter_fourcc(*"XVID")
-        writer = cv2.VideoWriter(args.output, fourcc, fps, (width, height))
+        # Hiển thị EAR
+        cv2.putText(frame, f"EAR: {ear_avg}", (10,30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
 
-    COUNTER = 0
-    ALARM_ON = False
-    alarm = AlarmPlayer(freq=1200, duration_ms=400)
-    ear_history = deque(maxlen=10)
+    cv2.imshow("Drowsiness Detector", frame)
+    key = cv2.waitKey(1) & 0xFF
+    if key == ord("q"):  # nhấn 'q' để thoát
+        break
 
-    try:
-        while True:
-            ret, frame = vs.read()
-            if not ret or frame is None:
-                print("[WARNING] Không đọc được frame từ camera")
-                continue
-
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            gray = gray.astype(np.uint8)  # Ép kiểu 8-bit
-
-            rects = detector(gray, 0)
-
-            for rect in rects:
-                shape = predictor(gray, rect)
-                shape = face_utils.shape_to_np(shape)
-
-                leftEye = shape[lStart:lEnd]
-                rightEye = shape[rStart:rEnd]
-                leftEAR = eye_aspect_ratio(leftEye)
-                rightEAR = eye_aspect_ratio(rightEye)
-                ear = (leftEAR + rightEAR) / 2.0
-
-                ear_history.append(ear)
-                smooth_ear = np.mean(ear_history)
-
-                leftHull = cv2.convexHull(leftEye)
-                rightHull = cv2.convexHull(rightEye)
-                cv2.drawContours(frame, [leftHull], -1, (0, 255, 0), 1)
-                cv2.drawContours(frame, [rightHull], -1, (0, 255, 0), 1)
-
-                if smooth_ear < args.ear_thresh:
-                    COUNTER += 1
-                    if COUNTER >= args.ear_consec_frames:
-                        if not ALARM_ON:
-                            ALARM_ON = True
-                            alarm.start()
-                        overlay = frame.copy()
-                        alpha = 0.4
-                        cv2.rectangle(overlay, (0,0), (width, height), (0,0,255), -1)
-                        cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
-                        cv2.putText(frame, "WAKE UP! DROWSINESS DETECTED", (10, height - 20),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,255,255), 2)
-                else:
-                    COUNTER = 0
-                    if ALARM_ON:
-                        ALARM_ON = False
-                        alarm.stop()
-
-                cv2.putText(frame, f"EAR: {smooth_ear:.3f}", (10, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
-                cv2.putText(frame, f"Frames: {COUNTER}", (10, 60),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
-
-            if len(rects) == 0 and ALARM_ON:
-                ALARM_ON = False
-                alarm.stop()
-
-            if writer is not None:
-                writer.write(frame)
-
-            cv2.imshow("Drowsiness Detector", frame)
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord("q"):
-                break
-
-    except KeyboardInterrupt:
-        pass
-    finally:
-        alarm.stop()
-        if writer is not None:
-            writer.release()
-        vs.release()
-        cv2.destroyAllWindows()
-
-if __name__ == "__main__":
-    main()
+cap.release()
+cv2.destroyAllWindows()
