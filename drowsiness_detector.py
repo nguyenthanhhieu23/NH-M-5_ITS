@@ -87,11 +87,15 @@ def main():
     try:
         while True:
             ret, frame = vs.read()
-            if not ret:
-                break
+            if not ret or frame is None:
+                print("[WARNING] Không đọc được frame từ camera")
+                continue
+
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            gray = gray.astype(np.uint8)  # Ép kiểu 8-bit
 
             rects = detector(gray, 0)
+
             for rect in rects:
                 shape = predictor(gray, rect)
                 shape = face_utils.shape_to_np(shape)
@@ -133,10 +137,9 @@ def main():
                 cv2.putText(frame, f"Frames: {COUNTER}", (10, 60),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
 
-            if len(rects) == 0:
-                if ALARM_ON:
-                    ALARM_ON = False
-                    alarm.stop()
+            if len(rects) == 0 and ALARM_ON:
+                ALARM_ON = False
+                alarm.stop()
 
             if writer is not None:
                 writer.write(frame)
