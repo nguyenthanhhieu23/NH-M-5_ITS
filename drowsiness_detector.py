@@ -2,12 +2,12 @@
 import cv2
 import dlib
 import time
-import os
-import sys
 import argparse
 import numpy as np
 import threading
 import simpleaudio as sa
+import sys
+import platform
 from imutils import face_utils
 from collections import deque
 
@@ -67,20 +67,42 @@ def main():
     args = ap.parse_args()
 
     detector = dlib.get_frontal_face_detector()
-
-    # Ensure the predictor file exists and is readable to avoid confusing errors
-    if not os.path.isfile(args.shape_predictor):
-        print(f"[FATAL] shape predictor file not found: {args.shape_predictor}")
-        print("Download it from: http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2")
-        sys.exit(1)
-
     predictor = dlib.shape_predictor(args.shape_predictor)
 
     (lStart, lEnd) = face_utils.FACIAL_LANDMARKS_IDXS["left_eye"]
     (rStart, rEnd) = face_utils.FACIAL_LANDMARKS_IDXS["right_eye"]
 
-    vs = cv2.VideoCapture(args.camera)
-    time.sleep(0.5)
+    # Try to open camera using DirectShow on Windows to avoid MSMF/MediaFoundation errors
+    preferred_backends = []
+    if platform.system() == 'Windows':
+        preferred_backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
+    else:
+        preferred_backends = [cv2.CAP_ANY]
+
+    vs = None
+    opened_backend = None
+    for backend in preferred_backends:
+        try:
+            vs = cv2.VideoCapture(args.camera, backend)
+            time.sleep(0.5)
+            if vs is not None and vs.isOpened():
+                opened_backend = backend
+                break
+            # release and try next
+            if vs is not None:
+                vs.release()
+        except Exception:
+            # try next backend
+            pass
+
+    if vs is None or not vs.isOpened():
+        print(f"[FATAL] Unable to open camera index {args.camera} with backends {preferred_backends}")
+        print("- Close other apps using the camera, try different --camera index, or check Windows camera privacy settings/drivers.")
+        sys.exit(1)
+
+    backend_names = {cv2.CAP_DSHOW: 'CAP_DSHOW', cv2.CAP_MSMF: 'CAP_MSMF', cv2.CAP_ANY: 'CAP_ANY'}
+    print(f"[INFO] Opened camera index {args.camera} using backend {backend_names.get(opened_backend, str(opened_backend))}")
+
     width = int(vs.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(vs.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = vs.get(cv2.CAP_PROP_FPS) or 20.0
@@ -100,45 +122,25 @@ def main():
             ret, frame = vs.read()
             if not ret or frame is None:
                 print("[WARNING] Không đọc được frame từ camera")
-                time.sleep(0.1)
                 continue
 
-            # Ensure frame is an 8-bit, C-contiguous BGR image
+            # Ensure frame is 8-bit and C-contiguous before conversion
             if frame.dtype != np.uint8:
-                # convertScaleAbs will scale/clip floats appropriately to uint8
+                # convertScaleAbs handles float -> uint8 safely
                 frame = cv2.convertScaleAbs(frame)
             if not frame.flags['C_CONTIGUOUS']:
                 frame = np.ascontiguousarray(frame)
 
-            # Convert to grayscale
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-            # Optional enhancement to help with slightly blurry/low-contrast frames
-            if args.enhance:
-                try:
-                    # CLAHE (adaptive histogram equalization) on gray to improve local contrast
-                    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-                    gray = clahe.apply(gray)
-                    # Unsharp mask on color frame for display/output
-                    blurred = cv2.GaussianBlur(frame, (0, 0), sigmaX=3)
-                    frame = cv2.addWeighted(frame, 1.5, blurred, -0.5, 0)
-                except Exception:
-                    # If enhancement fails for any reason, continue with original gray/frame
-                    if args.debug:
-                        print("[WARN] enhancement failed, continuing without enhancement")
-
             if gray.dtype != np.uint8 or not gray.flags['C_CONTIGUOUS']:
                 gray = np.ascontiguousarray(gray, dtype=np.uint8)
 
-            # Try detector on the grayscale image; if dlib complains, fall back to RGB input
+            # Call detector; if dlib rejects the image type, try RGB fallback and print diagnostics
             try:
                 rects = detector(gray, 0)
             except RuntimeError as e:
-                # Optionally print debug info
-                if args.debug:
-                    print(f"[ERROR] dlib detector error on gray image: {e}")
-                    print(f"        gray.dtype={gray.dtype}, shape={gray.shape}, contiguous={gray.flags['C_CONTIGUOUS']}")
-                # Try passing a 3-channel RGB image (dlib accepts RGB)
+                print(f"[ERROR] dlib detector error on gray image: {e}")
+                print(f"        gray.dtype={gray.dtype}, shape={gray.shape}, contiguous={gray.flags['C_CONTIGUOUS']}")
                 try:
                     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     if rgb.dtype != np.uint8:
@@ -146,12 +148,9 @@ def main():
                     if not rgb.flags['C_CONTIGUOUS']:
                         rgb = np.ascontiguousarray(rgb)
                     rects = detector(rgb, 0)
-                    if args.debug:
-                        print("[INFO] detector succeeded on RGB fallback")
+                    print("[INFO] detector succeeded on RGB fallback")
                 except Exception as e2:
                     print(f"[ERROR] dlib detector error on RGB fallback: {e2}")
-                    if args.debug:
-                        print(f"        frame.dtype={frame.dtype}, frame.shape={frame.shape}, contiguous={frame.flags['C_CONTIGUOUS']}")
                     rects = []
 
             for rect in rects:
