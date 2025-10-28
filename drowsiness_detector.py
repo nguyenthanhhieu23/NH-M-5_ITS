@@ -6,7 +6,9 @@ import os
 import argparse
 import numpy as np
 import threading
-import simpleaudio as sa
+import wave
+import tempfile
+import subprocess
 import sys
 import platform
 from imutils import face_utils
@@ -36,13 +38,53 @@ class AlarmPlayer:
         audio = (tone * (2**15 - 1)).astype(np.int16)
         return audio
 
+    def _write_wave_file(self, audio, fs):
+        # Write numpy int16 audio to a temporary WAV file and return path
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+        tmp_name = tmp.name
+        tmp.close()
+        with wave.open(tmp_name, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)  # int16
+            wf.setframerate(fs)
+            wf.writeframes(audio.tobytes())
+        return tmp_name
+
+    def _play_with_subprocess(self, wav_path):
+        # Use platform-native player to avoid C-extension crashes
+        try:
+            if platform.system() == 'Darwin':
+                # macOS
+                subprocess.run(['afplay', wav_path], check=False)
+            elif platform.system() == 'Linux':
+                subprocess.run(['aplay', wav_path], check=False)
+            elif platform.system() == 'Windows':
+                # Use PowerShell SoundPlayer
+                cmd = ['powershell', '-c', "(New-Object Media.SoundPlayer '{0}').PlaySync()".format(wav_path)]
+                subprocess.run(cmd, check=False)
+            else:
+                # fallback: try aplay/afplay
+                subprocess.run(['afplay', wav_path], check=False)
+        except Exception:
+            # best-effort; ignore playback errors
+            pass
+
     def _play_loop(self):
-        wave = self._make_tone()
-        while not self._stop_event.is_set():
+        fs = 44100
+        audio = self._make_tone()
+        wav_path = None
+        try:
+            wav_path = self._write_wave_file(audio, fs)
+            while not self._stop_event.is_set():
+                self._play_with_subprocess(wav_path)
+                # small sleep to avoid busy-loop if player returns immediately
+                time.sleep(max(0.01, self.duration_ms / 1000.0))
+        finally:
             try:
-                sa.play_buffer(wave, 1, 2, 44100).wait_done()
+                if wav_path is not None and os.path.exists(wav_path):
+                    os.unlink(wav_path)
             except Exception:
-                time.sleep(self.duration_ms / 1000.0)
+                pass
 
     def start(self):
         if self._thread is None or not self._thread.is_alive():
@@ -62,6 +104,7 @@ def main():
     ap.add_argument("--camera", type=int, default=0, help="camera device index")
     ap.add_argument("--ear-thresh", type=float, default=0.25, help="EAR threshold to consider eye closed")
     ap.add_argument("--ear-consec-frames", type=int, default=20, help="consecutive frames threshold for alarm")
+    ap.add_argument("--open-consec-frames", type=int, default=3, help="consecutive open-eye frames to auto-stop alarm")
     ap.add_argument("--output", default=None, help="optional: output video file (ex: out.avi)")
     ap.add_argument("--save-dir", default=None, help="optional: directory to save captured images")
     ap.add_argument("--save-all", action="store_true", help="save every captured frame to --save-dir")
@@ -123,10 +166,11 @@ def main():
     alarm = AlarmPlayer(freq=1200, duration_ms=400)
     ear_history = deque(maxlen=10)
     frame_idx = 0
+    OPEN_COUNTER = 0
     
     # Thêm biến để theo dõi thời gian dừng alarm
     ALARM_STOP_TIME = 0
-    ALARM_COOLDOWN_SECONDS = 5  # Chờ 5 giây trước khi cho phép alarm bắt đầu lại
+    ALARM_COOLDOWN_SECONDS = 0.1  # Chờ 0,1 giây trước khi cho phép alarm bắt đầu lại
 
     # Prepare save directory if requested
     if args.save_dir:
@@ -197,6 +241,7 @@ def main():
 
                 if smooth_ear < args.ear_thresh:
                     COUNTER += 1
+                    OPEN_COUNTER = 0
                     # Kiểm tra cooldown trước khi cho phép alarm bắt đầu
                     current_time = time.time()
                     can_start_alarm = (current_time - ALARM_STOP_TIME) > ALARM_COOLDOWN_SECONDS
@@ -214,9 +259,19 @@ def main():
                         cv2.putText(frame, "WAKE UP! DROWSINESS DETECTED", (10, height - 20),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,255,255), 2)
                 else:
-                    # Khi EAR > ngưỡng, vẫn giữ alarm ON nếu đã được kích hoạt
+                    # Khi EAR >= ngưỡng: tăng bộ đếm mở mắt liên tiếp
+                    OPEN_COUNTER += 1
+                    # Nếu mắt mở đủ số khung và alarm đang ON thì tự dừng alarm
+                    if ALARM_ON and OPEN_COUNTER >= args.open_consec_frames:
+                        ALARM_ON = False
+                        alarm.stop()
+                        COUNTER = 0
+                        ALARM_STOP_TIME = time.time()
+                        OPEN_COUNTER = 0
+                        if args.debug:
+                            print("[INFO] Alarm tự dừng vì mắt mở liên tiếp")
+                    # Nếu alarm vẫn đang ON, tiếp tục hiển thị cảnh báo
                     if ALARM_ON:
-                        # Tiếp tục hiển thị cảnh báo ngay cả khi EAR > ngưỡng
                         overlay = frame.copy()
                         alpha = 0.3  # Giảm độ mờ một chút
                         cv2.rectangle(overlay, (0,0), (width, height), (0,0,255), -1)
