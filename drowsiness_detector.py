@@ -2,6 +2,7 @@
 import cv2
 import dlib
 import time
+import os
 import argparse
 import numpy as np
 import threading
@@ -62,8 +63,13 @@ def main():
     ap.add_argument("--ear-thresh", type=float, default=0.25, help="EAR threshold to consider eye closed")
     ap.add_argument("--ear-consec-frames", type=int, default=20, help="consecutive frames threshold for alarm")
     ap.add_argument("--output", default=None, help="optional: output video file (ex: out.avi)")
+    ap.add_argument("--save-dir", default=None, help="optional: directory to save captured images")
+    ap.add_argument("--save-all", action="store_true", help="save every captured frame to --save-dir")
+    ap.add_argument("--save-on-alarm", action="store_true", help="save frames only when alarm is ON")
+    ap.add_argument("--save-interval", type=int, default=1, help="save every N frames (default 1)")
     ap.add_argument("--debug", action="store_true", help="print diagnostic info when dlib fails")
     ap.add_argument("--enhance", action="store_true", help="apply basic enhancement (CLAHE + unsharp) to improve blurry frames")
+    ap.add_argument("--force-alarm", action="store_true", help="start alarm immediately and keep it on until toggled")
     args = ap.parse_args()
 
     detector = dlib.get_frontal_face_detector()
@@ -116,6 +122,20 @@ def main():
     ALARM_ON = False
     alarm = AlarmPlayer(freq=1200, duration_ms=400)
     ear_history = deque(maxlen=10)
+    frame_idx = 0
+
+    # Prepare save directory if requested
+    if args.save_dir:
+        try:
+            os.makedirs(args.save_dir, exist_ok=True)
+        except Exception as e:
+            print(f"[FATAL] Cannot create save directory {args.save_dir}: {e}")
+            sys.exit(1)
+
+    # If user wants the alarm forced on, start it now
+    if args.force_alarm:
+        ALARM_ON = True
+        alarm.start()
 
     try:
         while True:
@@ -201,10 +221,51 @@ def main():
             if writer is not None:
                 writer.write(frame)
 
+            # Save frames according to options
+            frame_idx += 1
+            save_this = False
+            if args.save_dir:
+                if args.save_all:
+                    if frame_idx % max(1, args.save_interval) == 0:
+                        save_this = True
+                elif args.save_on_alarm and ALARM_ON:
+                    if frame_idx % max(1, args.save_interval) == 0:
+                        save_this = True
+
+            if save_this:
+                from datetime import datetime
+                fn = datetime.now().strftime("%Y%m%d_%H%M%S_%f") + ".jpg"
+                path = os.path.join(args.save_dir, fn)
+                try:
+                    cv2.imwrite(path, frame)
+                    if args.debug:
+                        print(f"[INFO] Saved frame to {path}")
+                except Exception as e:
+                    print(f"[WARN] Failed to save frame to {path}: {e}")
+
             cv2.imshow("Drowsiness Detector", frame)
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
                 break
+            # toggle alarm manually with 'a'
+            if key == ord('a'):
+                if ALARM_ON:
+                    ALARM_ON = False
+                    alarm.stop()
+                else:
+                    ALARM_ON = True
+                    alarm.start()
+            # manual save snapshot with 's'
+            if key == ord('s') and args.save_dir:
+                from datetime import datetime
+                fn = datetime.now().strftime("%Y%m%d_%H%M%S_%f") + "_manual.jpg"
+                path = os.path.join(args.save_dir, fn)
+                try:
+                    cv2.imwrite(path, frame)
+                    if args.debug:
+                        print(f"[INFO] Saved manual snapshot to {path}")
+                except Exception as e:
+                    print(f"[WARN] Failed to save manual snapshot to {path}: {e}")
 
     except KeyboardInterrupt:
         pass
