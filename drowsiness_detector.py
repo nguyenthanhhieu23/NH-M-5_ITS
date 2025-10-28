@@ -116,6 +116,10 @@ def main():
     ALARM_ON = False
     alarm = AlarmPlayer(freq=1200, duration_ms=400)
     ear_history = deque(maxlen=10)
+    
+    # Thêm biến để theo dõi thời gian dừng alarm
+    ALARM_STOP_TIME = 0
+    ALARM_COOLDOWN_SECONDS = 5  # Chờ 5 giây trước khi cho phép alarm bắt đầu lại
 
     try:
         while True:
@@ -173,10 +177,16 @@ def main():
 
                 if smooth_ear < args.ear_thresh:
                     COUNTER += 1
-                    if COUNTER >= args.ear_consec_frames:
+                    # Kiểm tra cooldown trước khi cho phép alarm bắt đầu
+                    current_time = time.time()
+                    can_start_alarm = (current_time - ALARM_STOP_TIME) > ALARM_COOLDOWN_SECONDS
+                    
+                    if COUNTER >= args.ear_consec_frames and can_start_alarm:
                         if not ALARM_ON:
                             ALARM_ON = True
                             alarm.start()
+                            print("[ALARM] Phát hiện buồn ngủ - Alarm bắt đầu!")
+                        # Tiếp tục hiển thị cảnh báo khi alarm đang ON
                         overlay = frame.copy()
                         alpha = 0.4
                         cv2.rectangle(overlay, (0,0), (width, height), (0,0,255), -1)
@@ -184,19 +194,42 @@ def main():
                         cv2.putText(frame, "WAKE UP! DROWSINESS DETECTED", (10, height - 20),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,255,255), 2)
                 else:
-                    COUNTER = 0
+                    # Khi EAR > ngưỡng, vẫn giữ alarm ON nếu đã được kích hoạt
                     if ALARM_ON:
-                        ALARM_ON = False
-                        alarm.stop()
+                        # Tiếp tục hiển thị cảnh báo ngay cả khi EAR > ngưỡng
+                        overlay = frame.copy()
+                        alpha = 0.3  # Giảm độ mờ một chút
+                        cv2.rectangle(overlay, (0,0), (width, height), (0,0,255), -1)
+                        cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
+                        cv2.putText(frame, "STILL DROWSY - Press 'S' to stop", (10, height - 20),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
 
                 cv2.putText(frame, f"EAR: {smooth_ear:.3f}", (10, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
                 cv2.putText(frame, f"Frames: {COUNTER}", (10, 60),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
+                
+                # Hiển thị trạng thái alarm chi tiết
+                if ALARM_ON:
+                    cv2.putText(frame, "ALARM: ON - Press 'S' to stop", 
+                                (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
+                    cv2.putText(frame, f"EAR Threshold: {args.ear_thresh}", 
+                                (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 1)
+                else:
+                    current_time = time.time()
+                    time_since_stop = current_time - ALARM_STOP_TIME
+                    if time_since_stop < ALARM_COOLDOWN_SECONDS:
+                        remaining_time = ALARM_COOLDOWN_SECONDS - time_since_stop
+                        cv2.putText(frame, f"ALARM: COOLDOWN ({remaining_time:.1f}s)", (10, 90),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,165,0), 2)
+                    else:
+                        cv2.putText(frame, "ALARM: READY", (10, 90),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
+                    cv2.putText(frame, f"Need {args.ear_consec_frames} frames to trigger", 
+                                (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 1)
 
-            if len(rects) == 0 and ALARM_ON:
-                ALARM_ON = False
-                alarm.stop()
+            # Không tự động dừng alarm khi không phát hiện khuôn mặt
+            # Alarm sẽ tiếp tục cho đến khi người dùng can thiệp
 
             if writer is not None:
                 writer.write(frame)
@@ -205,6 +238,13 @@ def main():
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
                 break
+            elif key == ord("s") and ALARM_ON:
+                # Phím 's' để dừng alarm thủ công
+                ALARM_ON = False
+                alarm.stop()
+                COUNTER = 0  # Reset counter khi dừng alarm thủ công
+                ALARM_STOP_TIME = time.time()  # Ghi nhận thời gian dừng alarm
+                print("[INFO] Alarm đã được dừng thủ công bởi người dùng")
 
     except KeyboardInterrupt:
         pass

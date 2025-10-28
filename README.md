@@ -41,8 +41,19 @@ https://github.com/davisking/dlib-models
 ---
 
 ## ▶️ Run
+
+### Cách 1: Sử dụng virtual environment (Khuyến nghị)
 ```bash
+# Kích hoạt virtual environment
+source .venv/bin/activate
+
+# Chạy chương trình
 python drowsiness_detector.py --shape-predictor shape_predictor_68_face_landmarks.dat
+```
+
+### Cách 2: Sử dụng python3 trực tiếp
+```bash
+python3 drowsiness_detector.py --shape-predictor shape_predictor_68_face_landmarks.dat
 ```
 
 ### Options:
@@ -52,16 +63,25 @@ python drowsiness_detector.py --shape-predictor shape_predictor_68_face_landmark
 | `--ear-thresh` | EAR threshold for closed eyes | 0.25 |
 | `--ear-consec-frames` | Frames required to trigger alarm | 20 |
 | `--output` | Optional output video file | None |
+| `--debug` | Print diagnostic info when dlib fails | False |
+| `--enhance` | Apply image enhancement (CLAHE + unsharp) | False |
 
-Press `q` to quit.
+### Controls:
+- Press `q` to quit
+- Press `s` to manually stop alarm (when active)
+- After stopping alarm, wait 5 seconds before it can trigger again
 
 ---
 
 ## 🔊 Features
-- Detects eyes and calculates EAR.
-- Issues visual + audio alerts when drowsiness is detected.
-- Adjustable thresholds and parameters.
-- Lightweight and easy to integrate with ITS platforms.
+- **Real-time drowsiness detection** using Eye Aspect Ratio (EAR)
+- **Continuous alarm system** - alarm runs until manually stopped
+- **Visual + audio alerts** when drowsiness is detected
+- **Manual alarm control** - press 'S' to stop alarm when needed
+- **Adjustable thresholds** and parameters for fine-tuning
+- **Image enhancement** options for better detection in poor lighting
+- **Debug mode** for troubleshooting detection issues
+- **Lightweight** and easy to integrate with ITS platforms
 
 ---
 
