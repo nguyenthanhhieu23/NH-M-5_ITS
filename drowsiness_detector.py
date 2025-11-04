@@ -70,48 +70,75 @@ def main():
     ap.add_argument("--debug", action="store_true", help="print diagnostic info when dlib fails")
     ap.add_argument("--enhance", action="store_true", help="apply basic enhancement (CLAHE + unsharp) to improve blurry frames")
     ap.add_argument("--force-alarm", action="store_true", help="start alarm immediately and keep it on until toggled")
+    ap.add_argument("--save-once-per-event", action="store_true", help="save a single snapshot when alarm first turns ON")
     args = ap.parse_args()
 
     detector = dlib.get_frontal_face_detector()
     predictor = dlib.shape_predictor(args.shape_predictor)
 
+   #  nếu bộ phát hiện dlib liên tục thất bại trên hệ thống này, hãy sử dụng OpenCV Haar cascade
+    cascade = None
+    cascade_enabled = False
+    dlib_failures = 0
+
     (lStart, lEnd) = face_utils.FACIAL_LANDMARKS_IDXS["left_eye"]
     (rStart, rEnd) = face_utils.FACIAL_LANDMARKS_IDXS["right_eye"]
 
-    # Try to open camera using DirectShow on Windows to avoid MSMF/MediaFoundation errors
-    preferred_backends = []
-    if platform.system() == 'Windows':
-        preferred_backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
-    else:
-        preferred_backends = [cv2.CAP_ANY]
-
+    # Try multiple camera indices and backends to find a working capture device
+    preferred_backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY] if platform.system() == 'Windows' else [cv2.CAP_ANY]
     vs = None
     opened_backend = None
-    for backend in preferred_backends:
-        try:
-            vs = cv2.VideoCapture(args.camera, backend)
-            time.sleep(0.5)
-            if vs is not None and vs.isOpened():
-                opened_backend = backend
-                break
-            # release and try next
-            if vs is not None:
-                vs.release()
-        except Exception:
-            # try next backend
-            pass
+    opened_index = None
+
+    # Try requested index first, then a few nearby indices
+    candidate_indices = [args.camera] + [i for i in range(0, 4) if i != args.camera]
+
+    tried = []
+    for idx in candidate_indices:
+        for backend in preferred_backends:
+            try:
+                if backend == cv2.CAP_ANY:
+                    cap = cv2.VideoCapture(idx)
+                else:
+                    cap = cv2.VideoCapture(idx, backend)
+                time.sleep(0.2)
+                ok = cap is not None and cap.isOpened()
+                tried.append((idx, backend, ok))
+                if ok:
+                    vs = cap
+                    opened_backend = backend
+                    opened_index = idx
+                    break
+                else:
+                    try:
+                        cap.release()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        if vs is not None:
+            break
 
     if vs is None or not vs.isOpened():
-        print(f"[FATAL] Unable to open camera index {args.camera} with backends {preferred_backends}")
-        print("- Close other apps using the camera, try different --camera index, or check Windows camera privacy settings/drivers.")
+        print(f"[FATAL] Unable to open any camera. Tried: {[(i,b) for (i,b,ok) in tried if not ok]}")
+        print("- Close other apps using the camera, try a different --camera index, check Windows camera privacy settings/drivers, or try a different USB port/webcam.")
         sys.exit(1)
 
     backend_names = {cv2.CAP_DSHOW: 'CAP_DSHOW', cv2.CAP_MSMF: 'CAP_MSMF', cv2.CAP_ANY: 'CAP_ANY'}
-    print(f"[INFO] Opened camera index {args.camera} using backend {backend_names.get(opened_backend, str(opened_backend))}")
+    print(f"[INFO] Opened camera index {opened_index} using backend {backend_names.get(opened_backend, str(opened_backend))}")
 
     width = int(vs.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(vs.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = vs.get(cv2.CAP_PROP_FPS) or 20.0
+
+    # Failure/reopen controls: try to recover automatically when frame grabs fail repeatedly
+    consecutive_failed_reads = 0
+    max_failed_reads_reopen = 15
+    reopen_attempts = 0
+    max_reopen_attempts = 4
+    reopen_delay_sec = 1.0
+    # Try reducing resolution if reopening helps stability
+    lower_resolutions = [(640, 480), (320, 240)]
 
     writer = None
     if args.output:
@@ -123,6 +150,8 @@ def main():
     alarm = AlarmPlayer(freq=1200, duration_ms=400)
     ear_history = deque(maxlen=10)
     frame_idx = 0
+    # track whether we've saved a snapshot for the current alarm event
+    saved_on_current_alarm = False
 
     # Prepare save directory if requested
     if args.save_dir:
@@ -141,8 +170,79 @@ def main():
         while True:
             ret, frame = vs.read()
             if not ret or frame is None:
-                print("[WARNING] Không đọc được frame từ camera")
-                continue
+                consecutive_failed_reads += 1
+                print(f"[WARNING] Không đọc được frame từ camera (consecutive failures: {consecutive_failed_reads})")
+                # small backoff to avoid busy loop
+                time.sleep(0.1)
+
+                # If repeated failures, try to recover by releasing & reopening the capture
+                if consecutive_failed_reads >= max_failed_reads_reopen:
+                    reopen_attempts += 1
+                    if reopen_attempts > max_reopen_attempts:
+                        print(f"[FATAL] Camera failed after {reopen_attempts} reopen attempts. Exiting loop.")
+                        break
+
+                    print("[INFO] Attempting to reopen camera to recover from repeated frame grab failures...")
+                    try:
+                        vs.release()
+                    except Exception:
+                        pass
+
+                    reopened = False
+                    tried2 = []
+                    # try the candidate indices and backends again
+                    for idx in candidate_indices:
+                        for backend in preferred_backends:
+                            try:
+                                if backend == cv2.CAP_ANY:
+                                    cap = cv2.VideoCapture(idx)
+                                else:
+                                    cap = cv2.VideoCapture(idx, backend)
+                                time.sleep(0.3)
+                                ok = cap is not None and cap.isOpened()
+                                tried2.append((idx, backend, ok))
+                                if ok:
+                                    vs = cap
+                                    opened_backend = backend
+                                    opened_index = idx
+                                    reopened = True
+                                    break
+                                else:
+                                    try:
+                                        cap.release()
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+                        if reopened:
+                            break
+
+                    if not reopened:
+                        print(f"[WARN] Reopen attempt failed (tried: {[(i,b) for (i,b,ok) in tried2 if not ok]}); will retry after delay.")
+                        time.sleep(reopen_delay_sec)
+                        continue
+                    else:
+                        print(f"[INFO] Reopened camera index {opened_index} using backend {backend_names.get(opened_backend, str(opened_backend))}")
+                        # try lowering resolution to improve stability
+                        for (w, h) in lower_resolutions:
+                            try:
+                                vs.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+                                vs.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+                                time.sleep(0.2)
+                                nw = int(vs.get(cv2.CAP_PROP_FRAME_WIDTH))
+                                nh = int(vs.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                                if nw == w and nh == h:
+                                    width, height = nw, nh
+                                    break
+                            except Exception:
+                                pass
+                        # reset counters after successful reopen
+                        consecutive_failed_reads = 0
+                        continue
+
+            # on successful read reset consecutive failure counters
+            consecutive_failed_reads = 0
+            reopen_attempts = 0
 
             # Ensure frame is 8-bit and C-contiguous before conversion
             if frame.dtype != np.uint8:
@@ -155,26 +255,84 @@ def main():
             if gray.dtype != np.uint8 or not gray.flags['C_CONTIGUOUS']:
                 gray = np.ascontiguousarray(gray, dtype=np.uint8)
 
-            # Call detector; if dlib rejects the image type, try RGB fallback and print diagnostics
+            # Prepare an RGB copy for dlib predictor (some dlib builds prefer RGB numpy arrays)
             try:
-                rects = detector(gray, 0)
-            except RuntimeError as e:
-                print(f"[ERROR] dlib detector error on gray image: {e}")
-                print(f"        gray.dtype={gray.dtype}, shape={gray.shape}, contiguous={gray.flags['C_CONTIGUOUS']}")
+                rgb_for_predictor = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                if rgb_for_predictor.dtype != np.uint8:
+                    rgb_for_predictor = cv2.convertScaleAbs(rgb_for_predictor)
+                if not rgb_for_predictor.flags['C_CONTIGUOUS']:
+                    rgb_for_predictor = np.ascontiguousarray(rgb_for_predictor)
+            except Exception:
+                rgb_for_predictor = None
+
+            # Try dlib detector first (preferred). If it fails repeatedly, switch to OpenCV cascade.
+            rects = []
+            if not cascade_enabled:
                 try:
-                    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    if rgb.dtype != np.uint8:
-                        rgb = cv2.convertScaleAbs(rgb)
-                    if not rgb.flags['C_CONTIGUOUS']:
-                        rgb = np.ascontiguousarray(rgb)
-                    rects = detector(rgb, 0)
-                    print("[INFO] detector succeeded on RGB fallback")
-                except Exception as e2:
-                    print(f"[ERROR] dlib detector error on RGB fallback: {e2}")
+                    rects = detector(gray, 0)
+                except RuntimeError as e:
+                    dlib_failures += 1
+                    if args.debug:
+                        print(f"[ERROR] dlib detector error on gray image: {e}")
+                        print(f"        gray.dtype={gray.dtype}, shape={gray.shape}, contiguous={gray.flags['C_CONTIGUOUS']}")
+                    # try RGB once
+                    try:
+                        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        if rgb.dtype != np.uint8:
+                            rgb = cv2.convertScaleAbs(rgb)
+                        if not rgb.flags['C_CONTIGUOUS']:
+                            rgb = np.ascontiguousarray(rgb)
+                        rects = detector(rgb, 0)
+                        if args.debug:
+                            print("[INFO] detector succeeded on RGB fallback")
+                    except Exception as e2:
+                        if args.debug:
+                            print(f"[ERROR] dlib detector error on RGB fallback: {e2}")
+                        rects = []
+
+                # If dlib has failed multiple times, enable OpenCV Haar cascade fallback
+                if dlib_failures >= 3 and not cascade_enabled:
+                    try:
+                        cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+                        cascade = cv2.CascadeClassifier(cascade_path)
+                        if cascade.empty():
+                            if args.debug:
+                                print(f"[WARN] Could not load cascade at {cascade_path}")
+                        else:
+                            cascade_enabled = True
+                            if args.debug:
+                                print("[INFO] Enabled OpenCV Haar cascade fallback for face detection")
+                    except Exception as e:
+                        if args.debug:
+                            print(f"[WARN] Exception while loading cascade: {e}")
+            # If cascade fallback is enabled, use it to detect faces
+            if cascade_enabled:
+                try:
+                    faces = cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+                    rects = [dlib.rectangle(int(x), int(y), int(x + w), int(y + h)) for (x, y, w, h) in faces]
+                except Exception as e:
+                    if args.debug:
+                        print(f"[WARN] Cascade detection failed: {e}")
                     rects = []
 
             for rect in rects:
-                shape = predictor(gray, rect)
+                # prefer RGB image for the predictor; fall back to gray if it errors
+                shape = None
+                if rgb_for_predictor is not None:
+                    try:
+                        shape = predictor(rgb_for_predictor, rect)
+                    except RuntimeError as e:
+                        if args.debug:
+                            print(f"[WARN] predictor failed on RGB image: {e}; will try gray image")
+                        shape = None
+                if shape is None:
+                    try:
+                        shape = predictor(gray, rect)
+                    except RuntimeError as e:
+                        # give a clear debug message and skip this rect
+                        if args.debug:
+                            print(f"[ERROR] predictor failed on gray image: {e}")
+                        continue
                 shape = face_utils.shape_to_np(shape)
 
                 leftEye = shape[lStart:lEnd]
@@ -197,6 +355,18 @@ def main():
                         if not ALARM_ON:
                             ALARM_ON = True
                             alarm.start()
+                            # Save once when alarm first turns on, if requested
+                            if args.save_once_per_event and args.save_dir and not saved_on_current_alarm:
+                                try:
+                                    from datetime import datetime
+                                    fn = datetime.now().strftime("%Y%m%d_%H%M%S_%f") + "_alarm.jpg"
+                                    path = os.path.join(args.save_dir, fn)
+                                    cv2.imwrite(path, frame)
+                                    saved_on_current_alarm = True
+                                    if args.debug:
+                                        print(f"[INFO] Saved alarm snapshot to {path}")
+                                except Exception as e:
+                                    print(f"[WARN] Failed to save alarm snapshot: {e}")
                         overlay = frame.copy()
                         alpha = 0.4
                         cv2.rectangle(overlay, (0,0), (width, height), (0,0,255), -1)
@@ -208,6 +378,8 @@ def main():
                     if ALARM_ON:
                         ALARM_ON = False
                         alarm.stop()
+                        # reset the per-event saved flag when alarm stops
+                        saved_on_current_alarm = False
 
                 cv2.putText(frame, f"EAR: {smooth_ear:.3f}", (10, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
@@ -217,6 +389,8 @@ def main():
             if len(rects) == 0 and ALARM_ON:
                 ALARM_ON = False
                 alarm.stop()
+                # reset the per-event saved flag when alarm stops (no faces)
+                saved_on_current_alarm = False
 
             if writer is not None:
                 writer.write(frame)
