@@ -76,7 +76,7 @@ def main():
     detector = dlib.get_frontal_face_detector()
     predictor = dlib.shape_predictor(args.shape_predictor)
 
-   #  nếu bộ phát hiện dlib liên tục thất bại trên hệ thống này, hãy sử dụng OpenCV Haar cascade
+    # if dlib detector repeatedly fails on this system, use OpenCV Haar cascade
     cascade = None
     cascade_enabled = False
     dlib_failures = 0
