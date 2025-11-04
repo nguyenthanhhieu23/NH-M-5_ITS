@@ -11,6 +11,7 @@ import tempfile
 import subprocess
 import sys
 import platform
+import shutil
 from imutils import face_utils
 from collections import deque
 
@@ -25,9 +26,18 @@ def eye_aspect_ratio(eye):
     return ear
 
 class AlarmPlayer:
-    def __init__(self, freq=1000, duration_ms=500):
+    """AlarmPlayer hỗ trợ hai chế độ:
+    - TTS (hệ thống nói câu cảnh báo) khi use_tts=True
+    - Phát beep WAV lặp lại khi use_tts=False (fallback)
+    """
+    def __init__(self, freq=1000, duration_ms=500, use_tts=False, tts_text=None):
+        # Tần số và độ dài beep
         self.freq = freq
         self.duration_ms = duration_ms
+        # Chế độ TTS
+        self.use_tts = bool(use_tts)
+        self.tts_text = tts_text or "Thức dậy, phát hiện buồn ngủ"
+        # Đồng bộ thread control
         self._stop_event = threading.Event()
         self._thread = None
 
@@ -39,37 +49,69 @@ class AlarmPlayer:
         return audio
 
     def _write_wave_file(self, audio, fs):
-        # Ghi mảng âm thanh numpy int16 ra tệp WAV tạm thời và trả về đường dẫn
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
         tmp_name = tmp.name
         tmp.close()
         with wave.open(tmp_name, 'wb') as wf:
             wf.setnchannels(1)
-            wf.setsampwidth(2)  # int16
+            wf.setsampwidth(2)
             wf.setframerate(fs)
             wf.writeframes(audio.tobytes())
         return tmp_name
 
     def _play_with_subprocess(self, wav_path):
-        # Phát âm thanh bằng trình phát mặc định của hệ điều hành để tránh lỗi C-extension
         try:
             if platform.system() == 'Darwin':
-                # macOS
                 subprocess.run(['afplay', wav_path], check=False)
             elif platform.system() == 'Linux':
-                subprocess.run(['aplay', wav_path], check=False)
+                # aplay may not exist; best-effort
+                if shutil.which('aplay'):
+                    subprocess.run(['aplay', wav_path], check=False)
+                elif shutil.which('paplay'):
+                    subprocess.run(['paplay', wav_path], check=False)
+                else:
+                    subprocess.run(['play', wav_path], check=False)
             elif platform.system() == 'Windows':
-                # Sử dụng PowerShell SoundPlayer
                 cmd = ['powershell', '-c', "(New-Object Media.SoundPlayer '{0}').PlaySync()".format(wav_path)]
                 subprocess.run(cmd, check=False)
             else:
-                # Dự phòng: thử afplay/aplay
                 subprocess.run(['afplay', wav_path], check=False)
         except Exception:
-            # Bỏ qua lỗi phát âm thanh (nếu có)
+            pass
+
+    def _speak_once(self):
+        text = str(self.tts_text)
+        try:
+            if platform.system() == 'Darwin':
+                subprocess.run(['say', text], check=False)
+            elif platform.system() == 'Linux':
+                if shutil.which('spd-say'):
+                    subprocess.run(['spd-say', text], check=False)
+                elif shutil.which('espeak'):
+                    subprocess.run(['espeak', text], check=False)
+                else:
+                    return
+            elif platform.system() == 'Windows':
+                safe = text.replace("'", "''")
+                cmd = ['powershell', '-Command', f"Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('{safe}')"]
+                subprocess.run(cmd, check=False)
+            else:
+                subprocess.run(['say', text], check=False)
+        except Exception:
             pass
 
     def _play_loop(self):
+        # Nếu dùng TTS, nói vòng lặp theo duration
+        if self.use_tts:
+            try:
+                while not self._stop_event.is_set():
+                    self._speak_once()
+                    time.sleep(max(0.05, self.duration_ms / 1000.0))
+            except Exception:
+                pass
+            return
+
+        # Ngược lại: phát beep WAV lặp
         fs = 44100
         audio = self._make_tone()
         wav_path = None
@@ -77,7 +119,6 @@ class AlarmPlayer:
             wav_path = self._write_wave_file(audio, fs)
             while not self._stop_event.is_set():
                 self._play_with_subprocess(wav_path)
-                # Nghỉ ngắn để tránh vòng lặp chạy quá nhanh nếu trình phát kết thúc sớm
                 time.sleep(max(0.01, self.duration_ms / 1000.0))
         finally:
             try:
@@ -113,6 +154,8 @@ def main():
     ap.add_argument("--debug", action="store_true", help="in thông tin chẩn đoán khi dlib lỗi")
     ap.add_argument("--enhance", action="store_true", help="tăng cường hình ảnh (CLAHE + unsharp) để cải thiện khung mờ")
     ap.add_argument("--force-alarm", action="store_true", help="bật cảnh báo ngay lập tức cho đến khi tắt")
+    ap.add_argument("--tts", action="store_true", help="dùng TTS hệ thống để nói cảnh báo (Thức dậy, phát hiện buồn ngủ)")
+    ap.add_argument("--alarm-tts-text", default=None, help="nội dung TTS khi --tts được bật (chuỗi) -- mặc định tiếng Việt)")
     args = ap.parse_args()
 
     detector = dlib.get_frontal_face_detector()
@@ -163,7 +206,12 @@ def main():
 
     COUNTER = 0
     ALARM_ON = False
-    alarm = AlarmPlayer(freq=1200, duration_ms=400)
+    # Khởi tạo AlarmPlayer: nếu --tts thì dùng TTS, ngược lại dùng beep WAV
+    if args.tts:
+        alarm_text = args.alarm_tts_text if args.alarm_tts_text is not None else "Thức dậy, phát hiện buồn ngủ"
+        alarm = AlarmPlayer(freq=1200, duration_ms=400, use_tts=True, tts_text=alarm_text)
+    else:
+        alarm = AlarmPlayer(freq=1200, duration_ms=400)
     ear_history = deque(maxlen=10)
     frame_idx = 0
     OPEN_COUNTER = 0
