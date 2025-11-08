@@ -76,7 +76,7 @@ def main():
     detector = dlib.get_frontal_face_detector()
     predictor = dlib.shape_predictor(args.shape_predictor)
 
-    # if dlib detector repeatedly fails on this system, use OpenCV Haar cascade
+    # nếu bộ phát hiện dlib liên tục thất bại trên hệ thống này, sử dụng OpenCV Haar cascade
     cascade = None
     cascade_enabled = False
     dlib_failures = 0
@@ -84,13 +84,13 @@ def main():
     (lStart, lEnd) = face_utils.FACIAL_LANDMARKS_IDXS["left_eye"]
     (rStart, rEnd) = face_utils.FACIAL_LANDMARKS_IDXS["right_eye"]
 
-    # Try multiple camera indices and backends to find a working capture device
+    # Thử nhiều chỉ số camera và backend để tìm thiết bị chụp hoạt động
     preferred_backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY] if platform.system() == 'Windows' else [cv2.CAP_ANY]
     vs = None
     opened_backend = None
     opened_index = None
 
-    # Try requested index first, then a few nearby indices
+    # Thử chỉ số được yêu cầu trước, sau đó một vài chỉ số gần đó
     candidate_indices = [args.camera] + [i for i in range(0, 4) if i != args.camera]
 
     tried = []
@@ -131,13 +131,13 @@ def main():
     height = int(vs.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = vs.get(cv2.CAP_PROP_FPS) or 20.0
 
-    # Failure/reopen controls: try to recover automatically when frame grabs fail repeatedly
+    # Điều khiển lỗi/mở lại: cố gắng khôi phục tự động khi việc lấy frame thất bại liên tục
     consecutive_failed_reads = 0
     max_failed_reads_reopen = 15
     reopen_attempts = 0
     max_reopen_attempts = 4
     reopen_delay_sec = 1.0
-    # Try reducing resolution if reopening helps stability
+    # Thử giảm độ phân giải nếu mở lại giúp ổn định
     lower_resolutions = [(640, 480), (320, 240)]
 
     writer = None
@@ -150,10 +150,10 @@ def main():
     alarm = AlarmPlayer(freq=1200, duration_ms=400)
     ear_history = deque(maxlen=10)
     frame_idx = 0
-    # track whether we've saved a snapshot for the current alarm event
+    # theo dõi xem chúng ta đã lưu ảnh chụp cho sự kiện báo động hiện tại chưa
     saved_on_current_alarm = False
 
-    # Prepare save directory if requested
+    # Chuẩn bị thư mục lưu nếu được yêu cầu
     if args.save_dir:
         try:
             os.makedirs(args.save_dir, exist_ok=True)
@@ -161,7 +161,7 @@ def main():
             print(f"[FATAL] Cannot create save directory {args.save_dir}: {e}")
             sys.exit(1)
 
-    # If user wants the alarm forced on, start it now
+    # Nếu người dùng muốn báo động được bật cưỡng bức, bật ngay bây giờ
     if args.force_alarm:
         ALARM_ON = True
         alarm.start()
@@ -172,10 +172,10 @@ def main():
             if not ret or frame is None:
                 consecutive_failed_reads += 1
                 print(f"[WARNING] Không đọc được frame từ camera (consecutive failures: {consecutive_failed_reads})")
-                # small backoff to avoid busy loop
+                # giảm tải nhỏ để tránh vòng lặp bận
                 time.sleep(0.1)
 
-                # If repeated failures, try to recover by releasing & reopening the capture
+                # Nếu lỗi lặp lại, cố gắng khôi phục bằng cách giải phóng và mở lại thiết bị chụp
                 if consecutive_failed_reads >= max_failed_reads_reopen:
                     reopen_attempts += 1
                     if reopen_attempts > max_reopen_attempts:
@@ -190,7 +190,7 @@ def main():
 
                     reopened = False
                     tried2 = []
-                    # try the candidate indices and backends again
+                    # thử lại các chỉ số và backend ứng viên
                     for idx in candidate_indices:
                         for backend in preferred_backends:
                             try:
@@ -223,7 +223,7 @@ def main():
                         continue
                     else:
                         print(f"[INFO] Reopened camera index {opened_index} using backend {backend_names.get(opened_backend, str(opened_backend))}")
-                        # try lowering resolution to improve stability
+                        # thử giảm độ phân giải để cải thiện độ ổn định
                         for (w, h) in lower_resolutions:
                             try:
                                 vs.set(cv2.CAP_PROP_FRAME_WIDTH, w)
@@ -236,17 +236,17 @@ def main():
                                     break
                             except Exception:
                                 pass
-                        # reset counters after successful reopen
+                        # đặt lại bộ đếm sau khi mở lại thành công
                         consecutive_failed_reads = 0
                         continue
 
-            # on successful read reset consecutive failure counters
+            # khi đọc thành công, đặt lại bộ đếm lỗi liên tiếp
             consecutive_failed_reads = 0
             reopen_attempts = 0
 
-            # Ensure frame is 8-bit and C-contiguous before conversion
+            # Đảm bảo frame là 8-bit và C-contiguous trước khi chuyển đổi
             if frame.dtype != np.uint8:
-                # convertScaleAbs handles float -> uint8 safely
+                # convertScaleAbs xử lý float -> uint8 an toàn
                 frame = cv2.convertScaleAbs(frame)
             if not frame.flags['C_CONTIGUOUS']:
                 frame = np.ascontiguousarray(frame)
@@ -255,7 +255,7 @@ def main():
             if gray.dtype != np.uint8 or not gray.flags['C_CONTIGUOUS']:
                 gray = np.ascontiguousarray(gray, dtype=np.uint8)
 
-            # Prepare an RGB copy for dlib predictor (some dlib builds prefer RGB numpy arrays)
+            # Chuẩn bị bản sao RGB cho bộ dự đoán dlib (một số bản dựng dlib ưa thích mảng numpy RGB)
             try:
                 rgb_for_predictor = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 if rgb_for_predictor.dtype != np.uint8:
@@ -265,7 +265,7 @@ def main():
             except Exception:
                 rgb_for_predictor = None
 
-            # Try dlib detector first (preferred). If it fails repeatedly, switch to OpenCV cascade.
+            # Thử bộ phát hiện dlib trước (ưu tiên). Nếu nó thất bại liên tục, chuyển sang cascade OpenCV.
             rects = []
             if not cascade_enabled:
                 try:
@@ -275,7 +275,7 @@ def main():
                     if args.debug:
                         print(f"[ERROR] dlib detector error on gray image: {e}")
                         print(f"        gray.dtype={gray.dtype}, shape={gray.shape}, contiguous={gray.flags['C_CONTIGUOUS']}")
-                    # try RGB once
+                    # thử RGB một lần
                     try:
                         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                         if rgb.dtype != np.uint8:
@@ -290,7 +290,7 @@ def main():
                             print(f"[ERROR] dlib detector error on RGB fallback: {e2}")
                         rects = []
 
-                # If dlib has failed multiple times, enable OpenCV Haar cascade fallback
+                # Nếu dlib đã thất bại nhiều lần, bật dự phòng cascade Haar OpenCV
                 if dlib_failures >= 3 and not cascade_enabled:
                     try:
                         cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
@@ -305,7 +305,7 @@ def main():
                     except Exception as e:
                         if args.debug:
                             print(f"[WARN] Exception while loading cascade: {e}")
-            # If cascade fallback is enabled, use it to detect faces
+            # Nếu dự phòng cascade được bật, sử dụng nó để phát hiện khuôn mặt
             if cascade_enabled:
                 try:
                     faces = cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
@@ -316,7 +316,7 @@ def main():
                     rects = []
 
             for rect in rects:
-                # prefer RGB image for the predictor; fall back to gray if it errors
+                # ưu tiên ảnh RGB cho bộ dự đoán; quay lại ảnh xám nếu có lỗi
                 shape = None
                 if rgb_for_predictor is not None:
                     try:
@@ -329,7 +329,7 @@ def main():
                     try:
                         shape = predictor(gray, rect)
                     except RuntimeError as e:
-                        # give a clear debug message and skip this rect
+                        # đưa ra thông báo debug rõ ràng và bỏ qua rect này
                         if args.debug:
                             print(f"[ERROR] predictor failed on gray image: {e}")
                         continue
@@ -355,7 +355,7 @@ def main():
                         if not ALARM_ON:
                             ALARM_ON = True
                             alarm.start()
-                            # Save once when alarm first turns on, if requested
+                            # Lưu một lần khi báo động bật lần đầu, nếu được yêu cầu
                             if args.save_once_per_event and args.save_dir and not saved_on_current_alarm:
                                 try:
                                     from datetime import datetime
@@ -378,7 +378,7 @@ def main():
                     if ALARM_ON:
                         ALARM_ON = False
                         alarm.stop()
-                        # reset the per-event saved flag when alarm stops
+                        # đặt lại cờ đã lưu theo sự kiện khi báo động dừng
                         saved_on_current_alarm = False
 
                 cv2.putText(frame, f"EAR: {smooth_ear:.3f}", (10, 30),
@@ -389,13 +389,13 @@ def main():
             if len(rects) == 0 and ALARM_ON:
                 ALARM_ON = False
                 alarm.stop()
-                # reset the per-event saved flag when alarm stops (no faces)
+                # đặt lại cờ đã lưu theo sự kiện khi báo động dừng (không có khuôn mặt)
                 saved_on_current_alarm = False
 
             if writer is not None:
                 writer.write(frame)
 
-            # Save frames according to options
+            # Lưu frame theo các tùy chọn
             frame_idx += 1
             save_this = False
             if args.save_dir:
@@ -421,7 +421,7 @@ def main():
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
                 break
-            # toggle alarm manually with 'a'
+            # bật/tắt báo động thủ công bằng phím 'a'
             if key == ord('a'):
                 if ALARM_ON:
                     ALARM_ON = False
@@ -429,7 +429,7 @@ def main():
                 else:
                     ALARM_ON = True
                     alarm.start()
-            # manual save snapshot with 's'
+            # lưu ảnh chụp thủ công bằng phím 's'
             if key == ord('s') and args.save_dir:
                 from datetime import datetime
                 fn = datetime.now().strftime("%Y%m%d_%H%M%S_%f") + "_manual.jpg"
