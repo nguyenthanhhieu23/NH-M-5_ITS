@@ -56,12 +56,71 @@ class AlarmPlayer:
             self._thread.join(timeout=0.5)
             self._thread = None
 
+class TTSPlayer:
+    def __init__(self, text="Thức dậy, phát hiện buồn ngủ"):
+        self.text = text
+        self._stop_event = threading.Event()
+        self._thread = None
+        self._last_played = 0
+        self._cooldown = 2.0  # không phát TTS quá thường xuyên
+
+    def _get_tts_command(self):
+        """Return TTS command based on OS"""
+        system = platform.system()
+        
+        if system == "Darwin":  # macOS
+            text_escaped = self.text.replace('"', '\\"')
+            return f'say "{text_escaped}"'
+        elif system == "Linux":
+            # Thử spd-say trước, rồi đến espeak
+            text_escaped = self.text.replace('"', '\\"')
+            return f'spd-say "{text_escaped}" 2>/dev/null || espeak "{text_escaped}" 2>/dev/null || echo "TTS not available"'
+        elif system == "Windows":
+            # Escape dấu nháy đơn trong text
+            safe_text = self.text.replace("'", "''")
+            ps_cmd = (
+                "Add-Type -AssemblyName System.Speech; "
+                "$speak = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                f"$speak.Speak('{safe_text}')"
+            )
+            return f'powershell -Command "{ps_cmd}"'
+        else:
+            return None
+
+    def _play_loop(self):
+        while not self._stop_event.is_set():
+            now = time.time()
+            if now - self._last_played >= self._cooldown:
+                try:
+                    cmd = self._get_tts_command()
+                    if cmd:
+                        os.system(cmd)
+                    self._last_played = time.time()
+                except Exception as e:
+                    pass
+                time.sleep(self._cooldown)
+            else:
+                time.sleep(0.5)
+
+    def start(self):
+        if self._thread is None or not self._thread.is_alive():
+            self._stop_event.clear()
+            self._last_played = time.time()
+            self._thread = threading.Thread(target=self._play_loop, daemon=True)
+            self._thread.start()
+
+    def stop(self):
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+            self._thread = None
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--shape-predictor", required=True, help="path to dlib's 68-point shape predictor")
     ap.add_argument("--camera", type=int, default=0, help="camera device index")
-    ap.add_argument("--ear-thresh", type=float, default=0.25, help="EAR threshold to consider eye closed")
-    ap.add_argument("--ear-consec-frames", type=int, default=20, help="consecutive frames threshold for alarm")
+    ap.add_argument("--ear-thresh", type=float, default=0.30, help="EAR threshold to consider eye closed")
+    ap.add_argument("--ear-consec-frames", type=int, default=10, help="consecutive frames threshold for alarm")
     ap.add_argument("--output", default=None, help="optional: output video file (ex: out.avi)")
     ap.add_argument("--save-dir", default=None, help="optional: directory to save captured images")
     ap.add_argument("--save-all", action="store_true", help="save every captured frame to --save-dir")
@@ -71,6 +130,8 @@ def main():
     ap.add_argument("--enhance", action="store_true", help="apply basic enhancement (CLAHE + unsharp) to improve blurry frames")
     ap.add_argument("--force-alarm", action="store_true", help="start alarm immediately and keep it on until toggled")
     ap.add_argument("--save-once-per-event", action="store_true", help="save a single snapshot when alarm first turns ON")
+    ap.add_argument("--tts", action="store_true", help="use system TTS (text-to-speech) for alarm instead of beep")
+    ap.add_argument("--alarm-tts-text", type=str, default="Thức dậy, phát hiện buồn ngủ", help="text to speak when alarm is triggered (with --tts)")
     args = ap.parse_args()
 
     detector = dlib.get_frontal_face_detector()
@@ -147,7 +208,15 @@ def main():
 
     COUNTER = 0
     ALARM_ON = False
-    alarm = AlarmPlayer(freq=1200, duration_ms=400)
+    
+    # Initialize alarm player based on --tts flag
+    if args.tts:
+        alarm = TTSPlayer(text=args.alarm_tts_text)
+        print(f"[INFO] Using TTS alarm with text: '{args.alarm_tts_text}'")
+    else:
+        alarm = AlarmPlayer(freq=1200, duration_ms=400)
+        print("[INFO] Using beep alarm")
+    
     ear_history = deque(maxlen=10)
     frame_idx = 0
     # theo dõi xem chúng ta đã lưu ảnh chụp cho sự kiện báo động hiện tại chưa

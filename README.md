@@ -60,8 +60,8 @@ python3 drowsiness_detector.py --shape-predictor shape_predictor_68_face_landmar
 | Tham số | Mô tả | Mặc định |
 |--------:|:------|:--------|
 | `--camera` | Chỉ số camera | 0 |
-| `--ear-thresh` | Ngưỡng EAR để xác định mắt nhắm | 0.25 |
-| `--ear-consec-frames` | Số khung hình liên tiếp để kích hoạt cảnh báo | 20 |
+| `--ear-thresh` | Ngưỡng EAR để xác định mắt nhắm | 0.30 |
+| `--ear-consec-frames` | Số khung hình liên tiếp để kích hoạt cảnh báo | 10 |
 | `--open-consec-frames` | Số khung hình mở mắt liên tiếp để tự dừng cảnh báo | 3 |
 | `--output` | Ghi video đầu ra (ví dụ out.avi) | None |
 | `--save-dir` | Thư mục để lưu ảnh/chụp khung hình | None |
@@ -76,33 +76,37 @@ python3 drowsiness_detector.py --shape-predictor shape_predictor_68_face_landmar
 
 ### Phím điều khiển
 - Nhấn `q` để thoát
-- Nhấn `s` để dừng cảnh báo thủ công (khi đang bật)
-- Sau khi dừng cảnh báo thủ công, chờ một khoảng (cooldown) trước khi cảnh báo có thể kích hoạt lại
+- Nhấn `a` để bật/tắt cảnh báo thủ công
+- Nhấn `s` để lưu ảnh chụp thủ công (nếu chỉ định `--save-dir`)
 
 ---
 
 ## 🔔 Kiểu cảnh báo: beep (mặc định) hoặc giọng nói (TTS)
 Chương trình mặc định phát âm thanh "beep" ngắn lặp lại. Bạn có thể bật giọng nói hệ thống để nói trực tiếp câu cảnh báo.
 
-1) Sử dụng beep (mặc định)
+**1) Sử dụng beep (mặc định)**
 ```bash
 python3 drowsiness_detector.py --shape-predictor shape_predictor_68_face_landmarks.dat
 ```
 
-2) Sử dụng giọng nói (TTS)
+**2) Sử dụng giọng nói (TTS)**
 ```bash
 python3 drowsiness_detector.py --shape-predictor shape_predictor_68_face_landmarks.dat --tts
 ```
 
-3) Tùy chỉnh nội dung giọng nói
+**3) Tùy chỉnh nội dung giọng nói**
 ```bash
 python3 drowsiness_detector.py --shape-predictor shape_predictor_68_face_landmarks.dat --tts --alarm-tts-text "Thức dậy, phát hiện buồn ngủ"
 ```
 
-Ghi chú hệ điều hành:
-- macOS: sử dụng `say` (mặc định có sẵn)
-- Linux: cần `spd-say` hoặc `espeak`/`paplay`/`aplay` để TTS hoạt động
-- Windows: sử dụng PowerShell System.Speech (thường có sẵn)
+**Ghi chú hệ điều hành:**
+- **macOS:** Sử dụng lệnh `say` (có sẵn)
+- **Linux:** Cần `spd-say` hoặc `espeak` để TTS hoạt động
+  ```bash
+  # Ubuntu/Debian
+  sudo apt-get install speech-dispatcher espeak
+  ```
+- **Windows:** Sử dụng PowerShell System.Speech (có sẵn)
 
 ---
 
