@@ -120,7 +120,7 @@ def main():
     ap.add_argument("--shape-predictor", required=True, help="path to dlib's 68-point shape predictor")
     ap.add_argument("--camera", type=int, default=0, help="camera device index")
     ap.add_argument("--ear-thresh", type=float, default=0.30, help="EAR threshold to consider eye closed")
-    ap.add_argument("--ear-consec-frames", type=int, default=10, help="consecutive frames threshold for alarm")
+    ap.add_argument("--ear-consec-frames", type=int, default=7, help="consecutive frames threshold for alarm (7 frames ≈ 2 seconds at ~3.5 fps)")
     ap.add_argument("--output", default=None, help="optional: output video file (ex: out.avi)")
     ap.add_argument("--save-dir", default=None, help="optional: directory to save captured images")
     ap.add_argument("--save-all", action="store_true", help="save every captured frame to --save-dir")
